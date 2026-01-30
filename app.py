@@ -7,23 +7,21 @@ from gtts import gTTS
 from io import BytesIO
 import re
 
-# --- CONFIGURAZIONE INIZIALE ---
+# --- CONFIGURAZIONE ---
 load_dotenv()
 st.set_page_config(page_title="PDF AI & Audio", layout="wide")
 
-# Gestione API Key
-api_key = os.getenv("GOOGLE_API_KEY")
+api_key = os.getenv("GOOGLE_API_KEY") or st.secrets.get("GOOGLE_API_KEY")
 if not api_key:
     api_key = st.sidebar.text_input("Inserisci Google Gemini API Key", type="password")
 
 if not api_key:
-    st.warning("👈 Inserisci la tua API Key nella barra laterale per iniziare.")
+    st.warning("👈 Chiave API mancante.")
     st.stop()
 
 genai.configure(api_key=api_key)
 
-# --- INIZIALIZZAZIONE SESSION STATE (MEMORIA) ---
-# Serve per non far sparire i risultati quando clicchi i pulsanti
+# --- MEMORIA (Session State) ---
 if 'pdf_text' not in st.session_state:
     st.session_state.pdf_text = ""
 if 'analysis_result' not in st.session_state:
@@ -43,14 +41,28 @@ def get_pdf_text(pdf_docs):
     return text
 
 def clean_text_for_audio(text):
-    """Pulisce il testo per evitare pause robotiche."""
-    # Sostituisce i ritorni a capo con spazi
+    """
+    Pulisce aggressivamente il testo per l'audio.
+    Rimuove simboli speciali mantenendo solo la punteggiatura di pausa.
+    """
+    # 1. Unisce le righe spezzate
     text = text.replace('\n', ' ')
-    # Rimuove spazi doppi
+    
+    # 2. Rimuove caratteri speciali che gTTS legge ad alta voce (asterischi, barre, parentesi quadre, ecc.)
+    # Mantiene solo: lettere, numeri, spazi e punteggiatura base (. , : ; ? !)
+    # I simboli speciali vengono sostituiti da uno spazio
+    text = re.sub(r'[^\w\s\.,:;?!àèéìòùÀÈÉÌÒÙ\'\"]', ' ', text)
+    
+    # 3. Rimuove sequenze di punteggiatura (es. "....." o ".__.") che creano rumore
+    text = re.sub(r'[\.,:;?!]{2,}', '.', text)
+    
+    # 4. Rimuove underscore e trattini che spesso vengono letti
+    text = text.replace('_', ' ').replace('-', ' ')
+    
+    # 5. Rimuove spazi doppi creati dalle sostituzioni
     text = re.sub(' +', ' ', text)
-    # Rimuove caratteri speciali che la voce non legge bene
-    text = text.replace('*', '').replace('#', '')
-    return text
+    
+    return text.strip()
 
 def analyze_with_gemini(text, prompt_logic, model_name):
     try:
@@ -63,10 +75,13 @@ def analyze_with_gemini(text, prompt_logic, model_name):
 
 def generate_audio(text):
     try:
+        # Applica la pulizia profonda
         clean_text = clean_text_for_audio(text)
+        
         if not clean_text.strip():
+            st.error("Testo troppo breve o vuoto dopo la pulizia.")
             return None
-        # Genera audio
+            
         tts = gTTS(text=clean_text, lang='it')
         mp3_fp = BytesIO()
         tts.write_to_fp(mp3_fp)
@@ -77,16 +92,12 @@ def generate_audio(text):
         return None
 
 # --- INTERFACCIA ---
-st.title("📄 PDF: Analisi AI + Creazione Audio")
+st.title("📄 PDF: Analisi AI + Audio Pulito")
 
-# 1. UPLOAD
 with st.sidebar:
     st.header("1. Carica File")
     uploaded_file = st.file_uploader("Trascina qui il PDF", type=["pdf"], accept_multiple_files=True)
-    
     st.divider()
-    
-    # Reset memoria se cambia il file
     if uploaded_file:
         current_text = get_pdf_text(uploaded_file)
         if current_text != st.session_state.pdf_text:
@@ -95,62 +106,41 @@ with st.sidebar:
             st.session_state.audio_bytes = None
             st.toast("Nuovo PDF caricato!", icon="✅")
 
-# 2. PANNELLO DI CONTROLLO
 if st.session_state.pdf_text:
-    
     col1, col2 = st.columns(2)
     
-    # COLONNA 1: ANALISI GEMINI
+    # ANALISI
     with col1:
         st.subheader("🧠 Analisi AI")
-        logic_option = st.selectbox(
-            "Tipo di Analisi:",
-            ["Sintesi Esecutiva", "Validazione Fattuale", "Action Items", "Analisi Critica"]
-        )
-        
-        if st.button("Analizza con Gemini", use_container_width=True):
-            with st.spinner("Gemini sta analizzando..."):
-                prompt_dict = {
-                    "Sintesi Esecutiva": "Fai un riassunto strutturato.",
-                    "Validazione Fattuale": "Verifica i dati nel testo.",
-                    "Action Items": "Estrai lista azioni da fare.",
-                    "Analisi Critica": "Trova punti deboli."
-                }
+        logic = st.selectbox("Analisi:", ["Sintesi", "Validazione", "Action Items", "Critica"])
+        if st.button("Analizza Testo", use_container_width=True):
+            prompts = {
+                "Sintesi": "Riassumi il contenuto.",
+                "Validazione": "Verifica i fatti.",
+                "Action Items": "Estrai azioni.",
+                "Critica": "Trova errori."
+            }
+            with st.spinner("Analisi in corso..."):
                 st.session_state.analysis_result = analyze_with_gemini(
-                    st.session_state.pdf_text, 
-                    prompt_dict[logic_option], 
-                    "gemini-pro"
+                    st.session_state.pdf_text, prompts[logic], "gemini-pro"
                 )
 
-    # COLONNA 2: CREAZIONE AUDIO
+    # AUDIO
     with col2:
-        st.subheader("🔊 Creazione Audio")
-        st.info("Crea un file MP3 leggendo il testo originale del PDF.")
-        
-        # PULSANTE DEDICATO PER L'AUDIO
-        if st.button("Crea File Audio", type="primary", use_container_width=True):
-            with st.spinner("Conversione testo in voce..."):
+        st.subheader("🔊 Audio")
+        st.info("Genera audio pulito (senza leggere simboli strani).")
+        if st.button("Crea Audio MP3", type="primary", use_container_width=True):
+            with st.spinner("Pulizia testo e conversione voce..."):
                 st.session_state.audio_bytes = generate_audio(st.session_state.pdf_text)
 
     st.divider()
-
-    # 3. AREA RISULTATI (Visualizza se presenti in memoria)
     
-    # Risultato Audio
     if st.session_state.audio_bytes:
-        st.success("File Audio Generato!")
         st.audio(st.session_state.audio_bytes, format='audio/mp3')
-        st.download_button(
-            label="⬇️ Scarica MP3",
-            data=st.session_state.audio_bytes,
-            file_name="lettura_pdf.mp3",
-            mime="audio/mp3"
-        )
-    
-    # Risultato Analisi
+        st.download_button("⬇️ Scarica MP3", st.session_state.audio_bytes, "audio_pulito.mp3", "audio/mp3")
+        
     if st.session_state.analysis_result:
-        st.markdown("### Risultato Analisi:")
+        st.markdown("### Risultato:")
         st.markdown(st.session_state.analysis_result)
-
 else:
-    st.info("Carica un PDF nella barra laterale per attivare i comandi.")
+    st.info("Carica un PDF.")
