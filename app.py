@@ -3,13 +3,14 @@ import google.generativeai as genai
 from pypdf import PdfReader
 import os
 from dotenv import load_dotenv
-from gtts import gTTS
-from io import BytesIO
+import asyncio
+import edge_tts
 import re
+import tempfile
 
 # --- CONFIGURAZIONE ---
 load_dotenv()
-st.set_page_config(page_title="PDF AI & Audio", layout="wide")
+st.set_page_config(page_title="PDF AI & Audio Neural", layout="wide")
 
 api_key = os.getenv("GOOGLE_API_KEY") or st.secrets.get("GOOGLE_API_KEY")
 if not api_key:
@@ -21,13 +22,13 @@ if not api_key:
 
 genai.configure(api_key=api_key)
 
-# --- MEMORIA (Session State) ---
+# --- MEMORIA ---
 if 'pdf_text' not in st.session_state:
     st.session_state.pdf_text = ""
 if 'analysis_result' not in st.session_state:
     st.session_state.analysis_result = None
-if 'audio_bytes' not in st.session_state:
-    st.session_state.audio_bytes = None
+if 'audio_file' not in st.session_state:
+    st.session_state.audio_file = None
 
 # --- FUNZIONI ---
 def get_pdf_text(pdf_docs):
@@ -41,35 +42,19 @@ def get_pdf_text(pdf_docs):
     return text
 
 def clean_text_for_audio(text):
-    """
-    Pulisce il testo rimuovendo simboli grafici ed elenchi puntati
-    che verrebbero letti ad alta voce (es. 'cerchio vuoto', 'pallino nero').
-    """
-    # 1. Rimuovi i ritorni a capo spezzati
+    """Pulizia avanzata per voce naturale."""
     text = text.replace('\n', ' ')
     
-    # 2. LISTA NERA: Rimuovi esplicitamente i simboli dei bullet point comuni
-    # Aggiungi qui altri simboli se ne senti di nuovi
-    bad_chars = [
-        '○', '◦', '•', '●',  # Cerchi pieni e vuoti
-        '▪', '■', '□',       # Quadrati
-        '➢', '➣', '➤', '->', # Frecce
-        '★', '☆',            # Stelle
-        '—', '–',            # Trattini lunghi (em dash/en dash)
-        '|', '/', '\\'       # Separatori verticali e barre
-    ]
-    
+    # Rimuove simboli lista nera (cerchi, quadrati, frecce)
+    bad_chars = ['○', '◦', '•', '●', '▪', '■', '□', '➢', '➣', '➤', '->', '★', '☆', '—', '–', '|', '/', '\\']
     for char in bad_chars:
         text = text.replace(char, '')
 
-    # 3. PULIZIA GENERALE (Regex)
-    # Mantiene SOLO: Lettere (incluse accentate), Numeri, e Punteggiatura base
-    # Tutto il resto viene cancellato
+    # Rimuove tutto tranne lettere, numeri e punteggiatura
     text = re.sub(r'[^\w\s\.,:;?!àèéìòùÀÈÉÌÒÙ\'\"]', '', text)
-    
-    # 4. Correzione finale degli spazi (evita doppi spazi creati dalle rimozioni)
+    # Rimuove puntini di sospensione lunghi
+    text = re.sub(r'[\.,:;?!]{2,}', '.', text)
     text = re.sub(' +', ' ', text)
-    
     return text.strip()
 
 def analyze_with_gemini(text, prompt_logic, model_name):
@@ -81,37 +66,59 @@ def analyze_with_gemini(text, prompt_logic, model_name):
     except Exception as e:
         return f"Errore: {e}"
 
-def generate_audio(text):
+# Funzione Asincrona per Edge-TTS
+async def _generate_edge_tts(text, voice_code):
+    communicate = edge_tts.Communicate(text, voice_code)
+    # Crea un file temporaneo per salvare l'audio
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as tmp_file:
+        await communicate.save(tmp_file.name)
+        return tmp_file.name
+
+def generate_audio(text, voice_gender):
     try:
-        # Applica la pulizia profonda
         clean_text = clean_text_for_audio(text)
-        
         if not clean_text.strip():
-            st.error("Testo troppo breve o vuoto dopo la pulizia.")
             return None
-            
-        tts = gTTS(text=clean_text, lang='it')
-        mp3_fp = BytesIO()
-        tts.write_to_fp(mp3_fp)
-        mp3_fp.seek(0)
-        return mp3_fp
+        
+        # Selezione Voce
+        # Diego ed Elsa sono voci "Neural" molto naturali
+        if voice_gender == "Maschile (Diego)":
+            voice_code = "it-IT-DiegoNeural"
+        else:
+            voice_code = "it-IT-ElsaNeural"
+
+        # Esegue la funzione asincrona in modo sincrono per Streamlit
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        audio_path = loop.run_until_complete(_generate_edge_tts(clean_text, voice_code))
+        
+        # Legge il file in bytes per Streamlit
+        with open(audio_path, "rb") as f:
+            audio_bytes = f.read()
+        return audio_bytes
+
     except Exception as e:
         st.error(f"Errore generazione audio: {e}")
         return None
 
 # --- INTERFACCIA ---
-st.title("📄 PDF: Analisi AI + Audio Pulito")
+st.title("📄 PDF: Analisi AI + Voce Neurale")
 
 with st.sidebar:
     st.header("1. Carica File")
     uploaded_file = st.file_uploader("Trascina qui il PDF", type=["pdf"], accept_multiple_files=True)
+    
     st.divider()
+    
+    st.header("2. Impostazioni Audio")
+    voice_choice = st.radio("Scegli la voce:", ["Maschile (Diego)", "Femminile (Elsa)"])
+
     if uploaded_file:
         current_text = get_pdf_text(uploaded_file)
         if current_text != st.session_state.pdf_text:
             st.session_state.pdf_text = current_text
             st.session_state.analysis_result = None
-            st.session_state.audio_bytes = None
+            st.session_state.audio_file = None
             st.toast("Nuovo PDF caricato!", icon="✅")
 
 if st.session_state.pdf_text:
@@ -135,17 +142,17 @@ if st.session_state.pdf_text:
 
     # AUDIO
     with col2:
-        st.subheader("🔊 Audio")
-        st.info("Genera audio pulito (senza leggere simboli strani).")
+        st.subheader("🔊 Audio Neurale")
+        st.info("Genera audio con intonazione umana.")
         if st.button("Crea Audio MP3", type="primary", use_container_width=True):
-            with st.spinner("Pulizia testo e conversione voce..."):
-                st.session_state.audio_bytes = generate_audio(st.session_state.pdf_text)
+            with st.spinner(f"Generazione voce {voice_choice}..."):
+                st.session_state.audio_file = generate_audio(st.session_state.pdf_text, voice_choice)
 
     st.divider()
     
-    if st.session_state.audio_bytes:
-        st.audio(st.session_state.audio_bytes, format='audio/mp3')
-        st.download_button("⬇️ Scarica MP3", st.session_state.audio_bytes, "audio_pulito.mp3", "audio/mp3")
+    if st.session_state.audio_file:
+        st.audio(st.session_state.audio_file, format='audio/mp3')
+        st.download_button("⬇️ Scarica MP3", st.session_state.audio_file, "audio_neurale.mp3", "audio/mp3")
         
     if st.session_state.analysis_result:
         st.markdown("### Risultato:")
