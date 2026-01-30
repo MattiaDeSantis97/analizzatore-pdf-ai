@@ -2,4 +2,4 @@ streamlit
 google-generativeai
 pypdf
 python-dotenv
-gTTS
+edge-tts
