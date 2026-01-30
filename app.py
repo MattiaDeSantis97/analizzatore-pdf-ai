@@ -42,24 +42,32 @@ def get_pdf_text(pdf_docs):
 
 def clean_text_for_audio(text):
     """
-    Pulisce aggressivamente il testo per l'audio.
-    Rimuove simboli speciali mantenendo solo la punteggiatura di pausa.
+    Pulisce il testo rimuovendo simboli grafici ed elenchi puntati
+    che verrebbero letti ad alta voce (es. 'cerchio vuoto', 'pallino nero').
     """
-    # 1. Unisce le righe spezzate
+    # 1. Rimuovi i ritorni a capo spezzati
     text = text.replace('\n', ' ')
     
-    # 2. Rimuove caratteri speciali che gTTS legge ad alta voce (asterischi, barre, parentesi quadre, ecc.)
-    # Mantiene solo: lettere, numeri, spazi e punteggiatura base (. , : ; ? !)
-    # I simboli speciali vengono sostituiti da uno spazio
-    text = re.sub(r'[^\w\s\.,:;?!àèéìòùÀÈÉÌÒÙ\'\"]', ' ', text)
+    # 2. LISTA NERA: Rimuovi esplicitamente i simboli dei bullet point comuni
+    # Aggiungi qui altri simboli se ne senti di nuovi
+    bad_chars = [
+        '○', '◦', '•', '●',  # Cerchi pieni e vuoti
+        '▪', '■', '□',       # Quadrati
+        '➢', '➣', '➤', '->', # Frecce
+        '★', '☆',            # Stelle
+        '—', '–',            # Trattini lunghi (em dash/en dash)
+        '|', '/', '\\'       # Separatori verticali e barre
+    ]
     
-    # 3. Rimuove sequenze di punteggiatura (es. "....." o ".__.") che creano rumore
-    text = re.sub(r'[\.,:;?!]{2,}', '.', text)
+    for char in bad_chars:
+        text = text.replace(char, '')
+
+    # 3. PULIZIA GENERALE (Regex)
+    # Mantiene SOLO: Lettere (incluse accentate), Numeri, e Punteggiatura base
+    # Tutto il resto viene cancellato
+    text = re.sub(r'[^\w\s\.,:;?!àèéìòùÀÈÉÌÒÙ\'\"]', '', text)
     
-    # 4. Rimuove underscore e trattini che spesso vengono letti
-    text = text.replace('_', ' ').replace('-', ' ')
-    
-    # 5. Rimuove spazi doppi creati dalle sostituzioni
+    # 4. Correzione finale degli spazi (evita doppi spazi creati dalle rimozioni)
     text = re.sub(' +', ' ', text)
     
     return text.strip()
