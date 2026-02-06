@@ -9,8 +9,7 @@ import re
 import io
 
 # --- CONFIGURAZIONE MODELLO ---
-# Se vuoi usare la 2.0 o una futura 2.5, cambia questa stringa:
-# Esempi validi: "gemini-1.5-flash", "gemini-2.0-flash-exp"
+# Modello veloce e stabile
 MODEL_ID = "Gemini 2.5 Flash-Lite"
 
 # --- SETUP PAGINA ---
@@ -58,7 +57,6 @@ def clean_text_for_audio(text):
 
 def analyze_with_gemini(text, prompt_logic):
     try:
-        # Usa la costante definita in alto
         model = genai.GenerativeModel(MODEL_ID)
         full_prompt = f"{prompt_logic}\n\n--- TESTO PDF ---\n{text}"
         response = model.generate_content(full_prompt)
@@ -128,6 +126,10 @@ def generate_audio(text, voice_gender):
             st.error("Errore: Audio vuoto.")
             return None
         return audio_bytes
+
+    except Exception as e:  # <--- QUESTA PARTE ERA MANCANTE
+        st.error(f"Errore generazione audio: {e}")
+        return None
 
 # --- INTERFACCIA UTENTE ---
 st.title(f"📄 PDF: Analisi AI ({MODEL_ID}) + Voce Neurale")
