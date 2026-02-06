@@ -10,7 +10,7 @@ import io
 
 # --- CONFIGURAZIONE MODELLO ---
 # Modello veloce e stabile
-MODEL_ID = "Gemini 2.5 Flash-Lite"
+MODEL_ID = "gemini-1.5-flash"
 
 # --- SETUP PAGINA ---
 load_dotenv()
