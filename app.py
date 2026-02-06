@@ -5,7 +5,7 @@ import os
 from dotenv import load_dotenv
 import asyncio
 import edge_tts
-import re  
+import re
 import io
 
 # --- CONFIGURAZIONE ---
@@ -30,7 +30,7 @@ if 'analysis_result' not in st.session_state:
 if 'audio_file' not in st.session_state:
     st.session_state.audio_file = None
 
-# --- FUNZIONI ---
+# --- FUNZIONI DI UTILITÀ ---
 def get_pdf_text(pdf_docs):
     text = ""
     for pdf in pdf_docs:
@@ -42,17 +42,11 @@ def get_pdf_text(pdf_docs):
     return text
 
 def clean_text_for_audio(text):
-    """Pulizia avanzata per voce naturale."""
     text = text.replace('\n', ' ')
-    
-    # Rimuove simboli lista nera (cerchi, quadrati, frecce)
     bad_chars = ['○', '◦', '•', '●', '▪', '■', '□', '➢', '➣', '➤', '->', '★', '☆', '—', '–', '|', '/', '\\']
     for char in bad_chars:
         text = text.replace(char, '')
-
-    # Rimuove tutto tranne lettere, numeri e punteggiatura
     text = re.sub(r'[^\w\s\.,:;?!àèéìòùÀÈÉÌÒÙ\'\"]', '', text)
-    # Rimuove puntini di sospensione lunghi
     text = re.sub(r'[\.,:;?!]{2,}', '.', text)
     text = re.sub(' +', ' ', text)
     return text.strip()
@@ -66,53 +60,77 @@ def analyze_with_gemini(text, prompt_logic, model_name):
     except Exception as e:
         return f"Errore: {e}"
 
-# Funzione Asincrona per Edge-TTS
-async def _generate_audio_stream(text, voice_code):
-    communicate = edge_tts.Communicate(text, voice_code)
-    audio_data = b""
-    # Raccoglie i chunk audio man mano che arrivano
-    async for chunk in communicate.stream():
-        if chunk["type"] == "audio":
-            audio_data += chunk["data"]
-    return audio_data
+# --- FUNZIONI AUDIO (SMART CHUNKING) ---
+def chunk_text(text, max_chars=2500):
+    """Divide il testo in blocchi rispettando la punteggiatura."""
+    chunks = []
+    current_chunk = ""
+    sentences = text.replace('.', '.|||').split('|||')
+    
+    for sentence in sentences:
+        if len(current_chunk) + len(sentence) < max_chars:
+            current_chunk += sentence
+        else:
+            chunks.append(current_chunk)
+            current_chunk = sentence
+            
+    if current_chunk:
+        chunks.append(current_chunk)
+    return chunks
+
+async def _generate_audio_stream_chunked(text, voice_code, status_placeholder):
+    chunks = chunk_text(text)
+    full_audio_data = b""
+    total_chunks = len(chunks)
+    
+    for i, chunk in enumerate(chunks):
+        if not chunk.strip(): continue
+        # Aggiorna UI
+        if status_placeholder:
+            status_placeholder.text(f"Generazione audio: blocco {i+1} di {total_chunks}...")
+        
+        communicate = edge_tts.Communicate(chunk, voice_code)
+        async for item in communicate.stream():
+            if item["type"] == "audio":
+                full_audio_data += item["data"]
+    return full_audio_data
 
 def generate_audio(text, voice_gender):
     try:
-        # 1. Pulizia
         clean_text = clean_text_for_audio(text)
         if not clean_text.strip():
-            st.warning("Nessun testo valido per l'audio.")
+            st.warning("Nessun testo valido.")
             return None
         
-        # 2. Safety Check Lunghezza
-        if len(clean_text) > 4000:
-            st.warning(f"Testo troppo lungo ({len(clean_text)} caratteri). Verranno letti solo i primi 4000.")
-            clean_text = clean_text[:4000]
+        # Limite aumentato
+        LIMIT = 20000 
+        if len(clean_text) > LIMIT:
+            st.warning(f"Testo enorme ({len(clean_text)} caratteri). Taglio ai primi {LIMIT}.")
+            clean_text = clean_text[:LIMIT]
 
-        # 3. Selezione Voce
         voice_code = "it-IT-DiegoNeural" if "Diego" in voice_gender else "it-IT-ElsaNeural"
+        status_box = st.empty()
 
-        # 4. Esecuzione Asincrona Isolata
-        # Creiamo un nuovo loop specifico per questa esecuzione per evitare conflitti con Streamlit
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         try:
-            audio_bytes = loop.run_until_complete(_generate_audio_stream(clean_text, voice_code))
+            audio_bytes = loop.run_until_complete(
+                _generate_audio_stream_chunked(clean_text, voice_code, status_box)
+            )
         finally:
             loop.close()
+            status_box.empty()
             
-        # Verifica se abbiamo generato byte
-        if not audio_bytes or len(audio_bytes) == 0:
-            st.error("Errore: L'audio generato è vuoto.")
+        if not audio_bytes:
+            st.error("Errore: Audio vuoto.")
             return None
-            
         return audio_bytes
 
     except Exception as e:
         st.error(f"Errore generazione audio: {e}")
         return None
 
-# --- INTERFACCIA ---
+# --- INTERFACCIA UTENTE ---
 st.title("📄 PDF: Analisi AI + Voce Neurale")
 
 with st.sidebar:
@@ -123,7 +141,9 @@ with st.sidebar:
     
     st.header("2. Impostazioni Audio")
     voice_choice = st.radio("Scegli la voce:", ["Maschile (Diego)", "Femminile (Elsa)"])
-
+    
+    # NOVITÀ: Scelta della sorgente
+    st.divider()
     source_choice = st.radio("Cosa vuoi ascoltare?", ["Testo Originale PDF", "Risultato Analisi AI"])
 
     if uploaded_file:
@@ -137,113 +157,69 @@ with st.sidebar:
 if st.session_state.pdf_text:
     col1, col2 = st.columns(2)
     
-    # ANALISI
+    # --- COLONNA 1: ANALISI ---
     with col1:
+        st.subheader("🧠 Analisi AI")
+        logic = st.selectbox("Analisi:", ["Sintesi", "Validazione", "Action Items", "Critica"])
+        
+        if st.button("Analizza Testo", use_container_width=True):
+            prompts = {
+                "Sintesi": "Riassumi il contenuto.",
+                "Validazione": "Verifica i fatti.",
+                "Action Items": "Estrai azioni.",
+                "Critica": "Trova errori."
+            }
+            with st.spinner("Analisi in corso..."):
+                st.session_state.analysis_result = analyze_with_gemini(
+                    st.session_state.pdf_text, prompts[logic], "gemini-pro"
+                )
+        
+        # MOSTRA RISULTATO ANALISI
+        if st.session_state.analysis_result:
+            st.markdown("### Risultato:")
+            st.markdown(st.session_state.analysis_result)
+            st.download_button(
+                label="💾 Scarica Report AI",
+                data=st.session_state.analysis_result,
+                file_name="analisi_ai.md",
+                mime="text/markdown"
+            )
+
+        # Q&A CHAT
         st.divider()
         st.subheader("💬 Chiedi al PDF")
-        user_question = st.text_input("Fai una domanda specifica sul contenuto:")
-    if user_question:
-        if st.button("Chiedi"):
+        user_question = st.text_input("Fai una domanda specifica:")
+        if user_question and st.button("Chiedi"):
             with st.spinner("Cerco la risposta..."):
                 answer = analyze_with_gemini(st.session_state.pdf_text, user_question, "gemini-pro")
                 st.markdown(f"**Risposta:**\n{answer}")
-                
-    # --- FUNZIONI AUDIO AVANZATE (CHUNK SUPPORT) ---
 
-def chunk_text(text, max_chars=2500):
-    """
-    Divide il testo in blocchi più piccoli rispettando la punteggiatura
-    per evitare timeout dell'API e tagli bruschi.
-    """
-    chunks = []
-    current_chunk = ""
-    
-    # Dividiamo per frasi (approssimazione basata sui punti)
-    sentences = text.replace('.', '.|||').split('|||')
-    
-    for sentence in sentences:
-        if len(current_chunk) + len(sentence) < max_chars:
-            current_chunk += sentence
-        else:
-            chunks.append(current_chunk)
-            current_chunk = sentence
+    # --- COLONNA 2: AUDIO ---
+    with col2:
+        st.subheader("🔊 Audio Neurale")
+        st.info(f"Modalità: {source_choice}")
+        
+        if st.button("Crea Audio MP3", type="primary", use_container_width=True):
+            # Determina cosa leggere
+            text_to_read = st.session_state.pdf_text if source_choice == "Testo Originale PDF" else st.session_state.analysis_result
             
-    if current_chunk:
-        chunks.append(current_chunk)
+            if not text_to_read:
+                st.error("⚠️ Testo mancante. Fai prima l'analisi o carica un PDF.")
+            else:
+                with st.spinner(f"Generazione voce {voice_choice}..."):
+                    st.session_state.audio_file = generate_audio(text_to_read, voice_choice)
+
+        st.divider()
         
-    return chunks
-
-async def _generate_audio_stream_chunked(text, voice_code, status_placeholder):
-    """
-    Genera audio processando il testo a blocchi e aggiorna la UI.
-    """
-    chunks = chunk_text(text)
-    full_audio_data = b""
-    total_chunks = len(chunks)
-    
-    for i, chunk in enumerate(chunks):
-        if not chunk.strip(): 
-            continue
-            
-        # Aggiorna la barra di progresso nella UI
-        status_placeholder.text(f"Generazione audio: blocco {i+1} di {total_chunks}...")
-        
-        communicate = edge_tts.Communicate(chunk, voice_code)
-        async for item in communicate.stream():
-            if item["type"] == "audio":
-                full_audio_data += item["data"]
-                
-    return full_audio_data
-
-def generate_audio(text, voice_gender):
-    try:
-        # 1. Pulizia
-        clean_text = clean_text_for_audio(text)
-        if not clean_text.strip():
-            st.warning("Nessun testo valido per l'audio.")
-            return None
-        
-        # 2. Controllo Limite Massimo (aumentato a 20.000 per sicurezza)
-        LIMIT = 20000 
-        if len(clean_text) > LIMIT:
-            st.warning(f"Testo enorme ({len(clean_text)} caratteri). Taglio ai primi {LIMIT}.")
-            clean_text = clean_text[:LIMIT]
-
-        # 3. Selezione Voce
-        voice_code = "it-IT-DiegoNeural" if "Diego" in voice_gender else "it-IT-ElsaNeural"
-
-        # 4. Placeholder per feedback visivo
-        status_box = st.empty()
-
-        # 5. Esecuzione Asincrona con Loop Isolato
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        try:
-            audio_bytes = loop.run_until_complete(
-                _generate_audio_stream_chunked(clean_text, voice_code, status_box)
+        if st.session_state.audio_file:
+            # FIX PLAYER AUDIO
+            st.audio(io.BytesIO(st.session_state.audio_file), format='audio/mpeg')
+            st.download_button(
+                "⬇️ Scarica MP3", 
+                st.session_state.audio_file, 
+                "audio_neurale.mp3", 
+                "audio/mpeg"
             )
-        finally:
-            loop.close()
-            status_box.empty() # Rimuove il messaggio di caricamento alla fine
-            
-        if not audio_bytes:
-            st.error("Errore: Audio vuoto.")
-            return None
-            
-        return audio_bytes
 
-    except Exception as e:
-        st.error(f"Errore generazione audio: {e}")
-        return None
-        
-    if st.session_state.analysis_result:
-        st.markdown("### Risultato:")
-        st.markdown(st.session_state.analysis_result)
-        st.download_button(
-            label="💾 Scarica Report AI",
-            data=st.session_state.analysis_result,
-            file_name="analisi_ai.md",
-            mime="text/markdown"
-        )
 else:
-    st.info("Carica un PDF.")
+    st.info("Carica un PDF dalla barra laterale per iniziare.")
