@@ -162,8 +162,16 @@ if st.session_state.pdf_text:
     st.divider()
     
     if st.session_state.audio_file:
-        st.audio(st.session_state.audio_file, format='audio/mp3')
-        st.download_button("⬇️ Scarica MP3", st.session_state.audio_file, "audio_neurale.mp3", "audio/mp3")
+        # WRAPPER: Avvolgiamo i bytes in un BytesIO per simulare un file fisico
+        # FORMATO: Usiamo 'audio/mpeg' che è lo standard ufficiale per gli MP3 (più compatibile di 'audio/mp3')
+        st.audio(io.BytesIO(st.session_state.audio_file), format='audio/mpeg')
+        
+        st.download_button(
+            label="⬇️ Scarica MP3", 
+            data=st.session_state.audio_file, 
+            file_name="audio_neurale.mp3", 
+            mime="audio/mpeg"
+        )
         
     if st.session_state.analysis_result:
         st.markdown("### Risultato:")
