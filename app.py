@@ -148,7 +148,6 @@ if st.session_state.pdf_text:
                 answer = analyze_with_gemini(st.session_state.pdf_text, user_question, "gemini-pro")
                 st.markdown(f"**Risposta:**\n{answer}")
                 
-    # AUDIO
     # --- FUNZIONI AUDIO AVANZATE (CHUNK SUPPORT) ---
 
 def chunk_text(text, max_chars=2500):
