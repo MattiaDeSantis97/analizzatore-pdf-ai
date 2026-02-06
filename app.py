@@ -124,6 +124,8 @@ with st.sidebar:
     st.header("2. Impostazioni Audio")
     voice_choice = st.radio("Scegli la voce:", ["Maschile (Diego)", "Femminile (Elsa)"])
 
+    source_choice = st.radio("Cosa vuoi ascoltare?", ["Testo Originale PDF", "Risultato Analisi AI"])
+
     if uploaded_file:
         current_text = get_pdf_text(uploaded_file)
         if current_text != st.session_state.pdf_text:
@@ -137,27 +139,25 @@ if st.session_state.pdf_text:
     
     # ANALISI
     with col1:
-        st.subheader("🧠 Analisi AI")
-        logic = st.selectbox("Analisi:", ["Sintesi", "Validazione", "Action Items", "Critica"])
-        if st.button("Analizza Testo", use_container_width=True):
-            prompts = {
-                "Sintesi": "Riassumi il contenuto.",
-                "Validazione": "Verifica i fatti.",
-                "Action Items": "Estrai azioni.",
-                "Critica": "Trova errori."
-            }
-            with st.spinner("Analisi in corso..."):
-                st.session_state.analysis_result = analyze_with_gemini(
-                    st.session_state.pdf_text, prompts[logic], "gemini-pro"
-                )
-
+        st.divider()
+        st.subheader("💬 Chiedi al PDF")
+        user_question = st.text_input("Fai una domanda specifica sul contenuto:")
+    if user_question:
+        if st.button("Chiedi"):
+            with st.spinner("Cerco la risposta..."):
+                answer = analyze_with_gemini(st.session_state.pdf_text, user_question, "gemini-pro")
+                st.markdown(f"**Risposta:**\n{answer}")
+                
     # AUDIO
     with col2:
         st.subheader("🔊 Audio Neurale")
         st.info("Genera audio con intonazione umana.")
-        if st.button("Crea Audio MP3", type="primary", use_container_width=True):
+        text_to_read = st.session_state.pdf_text if source_choice == "Testo Originale PDF" else st.session_state.analysis_result
+        if not text_to_read:
+            st.error("Nessun testo disponibile per la selezione corrente.")
+        else:
             with st.spinner(f"Generazione voce {voice_choice}..."):
-                st.session_state.audio_file = generate_audio(st.session_state.pdf_text, voice_choice)
+                st.session_state.audio_file = generate_audio(text_to_read, voice_choice)
 
     st.divider()
     
@@ -176,5 +176,11 @@ if st.session_state.pdf_text:
     if st.session_state.analysis_result:
         st.markdown("### Risultato:")
         st.markdown(st.session_state.analysis_result)
+        st.download_button(
+            label="💾 Scarica Report AI",
+            data=st.session_state.analysis_result,
+            file_name="analisi_ai.md",
+            mime="text/markdown"
+        )
 else:
     st.info("Carica un PDF.")
