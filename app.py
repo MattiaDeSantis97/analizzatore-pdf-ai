@@ -8,215 +8,162 @@ import edge_tts
 import re
 import io
 
-# --- CONFIGURAZIONE MODELLO ---
-# Modello veloce e stabile
+# --- CONFIGURAZIONE ---
 MODEL_ID = "gemini-2.5-flash"
-
-# --- SETUP PAGINA ---
 load_dotenv()
 st.set_page_config(page_title="PDF AI & Audio Neural", layout="wide")
 
 api_key = os.getenv("GOOGLE_API_KEY") or st.secrets.get("GOOGLE_API_KEY")
 if not api_key:
     api_key = st.sidebar.text_input("Inserisci Google Gemini API Key", type="password")
-
-if not api_key:
-    st.warning("👈 Chiave API mancante.")
-    st.stop()
+    if not api_key:
+        st.stop()
 
 genai.configure(api_key=api_key)
 
-# --- MEMORIA ---
+# --- STATO TEMPORANEO (Necessario per i download) ---
 if 'pdf_text' not in st.session_state:
     st.session_state.pdf_text = ""
 if 'analysis_result' not in st.session_state:
     st.session_state.analysis_result = None
+if 'temp_chat_result' not in st.session_state: # Buffer temporaneo per download chat
+    st.session_state.temp_chat_result = None
 if 'audio_file' not in st.session_state:
     st.session_state.audio_file = None
 
-# --- FUNZIONI DI UTILITÀ ---
+# --- FUNZIONI ---
 def get_pdf_text(pdf_docs):
     text = ""
     for pdf in pdf_docs:
-        pdf_reader = PdfReader(pdf)
-        for page in pdf_reader.pages:
+        reader = PdfReader(pdf)
+        for page in reader.pages:
             content = page.extract_text()
-            if content:
-                text += content
+            if content: text += content
     return text
 
 def clean_text_for_audio(text):
     text = text.replace('\n', ' ')
-    bad_chars = ['○', '◦', '•', '●', '▪', '■', '□', '➢', '➣', '➤', '->', '★', '☆', '—', '–', '|', '/', '\\']
-    for char in bad_chars:
-        text = text.replace(char, '')
     text = re.sub(r'[^\w\s\.,:;?!àèéìòùÀÈÉÌÒÙ\'\"]', '', text)
     text = re.sub(r'[\.,:;?!]{2,}', '.', text)
-    text = re.sub(' +', ' ', text)
     return text.strip()
 
-def analyze_with_gemini(text, prompt_logic):
+def analyze_with_gemini(text, prompt):
     try:
         model = genai.GenerativeModel(MODEL_ID)
-        full_prompt = f"{prompt_logic}\n\n--- TESTO PDF ---\n{text}"
-        response = model.generate_content(full_prompt)
+        response = model.generate_content(f"{prompt}\n\n--- TESTO ---\n{text}")
         return response.text
     except Exception as e:
         return f"Errore: {e}"
 
-# --- FUNZIONI AUDIO (SMART CHUNKING) ---
+# --- FUNZIONI AUDIO ---
 def chunk_text(text, max_chars=2500):
     chunks = []
     current_chunk = ""
-    sentences = text.replace('.', '.|||').split('|||')
-    
-    for sentence in sentences:
+    for sentence in text.replace('.', '.|||').split('|||'):
         if len(current_chunk) + len(sentence) < max_chars:
             current_chunk += sentence
         else:
             chunks.append(current_chunk)
             current_chunk = sentence
-            
-    if current_chunk:
-        chunks.append(current_chunk)
+    if current_chunk: chunks.append(current_chunk)
     return chunks
 
-async def _generate_audio_stream_chunked(text, voice_code, status_placeholder):
+async def _gen_audio_stream(text, voice, status):
     chunks = chunk_text(text)
-    full_audio_data = b""
-    total_chunks = len(chunks)
+    data = b""
+    for i, ch in enumerate(chunks):
+        if not ch.strip(): continue
+        if status: status.text(f"Generazione audio... ({i+1}/{len(chunks)})")
+        async for item in edge_tts.Communicate(ch, voice).stream():
+            if item["type"] == "audio": data += item["data"]
+    return data
+
+def generate_audio(text, gender):
+    clean = clean_text_for_audio(text)
+    if not clean: return None
+    clean = clean[:20000] # Limite sicurezza
     
-    for i, chunk in enumerate(chunks):
-        if not chunk.strip(): continue
-        if status_placeholder:
-            status_placeholder.text(f"Generazione audio: blocco {i+1} di {total_chunks}...")
-        
-        communicate = edge_tts.Communicate(chunk, voice_code)
-        async for item in communicate.stream():
-            if item["type"] == "audio":
-                full_audio_data += item["data"]
-    return full_audio_data
-
-def generate_audio(text, voice_gender):
+    voice = "it-IT-DiegoNeural" if "Diego" in gender else "it-IT-ElsaNeural"
+    status = st.empty()
+    
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
     try:
-        clean_text = clean_text_for_audio(text)
-        if not clean_text.strip():
-            st.warning("Nessun testo valido.")
-            return None
-        
-        LIMIT = 20000 
-        if len(clean_text) > LIMIT:
-            st.warning(f"Testo enorme ({len(clean_text)} caratteri). Taglio ai primi {LIMIT}.")
-            clean_text = clean_text[:LIMIT]
-
-        voice_code = "it-IT-DiegoNeural" if "Diego" in voice_gender else "it-IT-ElsaNeural"
-        status_box = st.empty()
-
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        try:
-            audio_bytes = loop.run_until_complete(
-                _generate_audio_stream_chunked(clean_text, voice_code, status_box)
-            )
-        finally:
-            loop.close()
-            status_box.empty()
-            
-        if not audio_bytes:
-            st.error("Errore: Audio vuoto.")
-            return None
-        return audio_bytes
-
-    except Exception as e:  # <--- QUESTA PARTE ERA MANCANTE
-        st.error(f"Errore generazione audio: {e}")
+        audio = loop.run_until_complete(_gen_audio_stream(clean, voice, status))
+    except Exception as e:
+        st.error(f"Errore audio: {e}")
         return None
+    finally:
+        loop.close()
+        status.empty()
+    return audio
 
-# --- INTERFACCIA UTENTE ---
-st.title(f"📄 PDF: Analisi AI ({MODEL_ID}) + Voce Neurale")
+# --- INTERFACCIA ---
+st.title(f"📄 PDF AI Analyzer ({MODEL_ID})")
 
 with st.sidebar:
-    st.header("1. Carica File")
-    uploaded_file = st.file_uploader("Trascina qui il PDF", type=["pdf"], accept_multiple_files=True)
-    
+    st.header("1. Upload")
+    files = st.file_uploader("PDF", type=["pdf"], accept_multiple_files=True)
     st.divider()
-    
-    st.header("2. Impostazioni Audio")
-    voice_choice = st.radio("Scegli la voce:", ["Maschile (Diego)", "Femminile (Elsa)"])
-    
-    st.divider()
-    source_choice = st.radio("Cosa vuoi ascoltare?", ["Testo Originale PDF", "Risultato Analisi AI"])
+    st.header("2. Audio")
+    voice_opt = st.radio("Voce", ["Maschile (Diego)", "Femminile (Elsa)"])
+    source_opt = st.radio("Sorgente Audio", ["Testo PDF", "Analisi AI"])
 
-    if uploaded_file:
-        current_text = get_pdf_text(uploaded_file)
-        if current_text != st.session_state.pdf_text:
-            st.session_state.pdf_text = current_text
+    if files:
+        txt = get_pdf_text(files)
+        if txt != st.session_state.pdf_text:
+            st.session_state.pdf_text = txt
+            # Reset dei buffer quando cambia il file
             st.session_state.analysis_result = None
+            st.session_state.temp_chat_result = None 
             st.session_state.audio_file = None
-            st.toast("Nuovo PDF caricato!", icon="✅")
+            st.toast("PDF Caricato!")
 
 if st.session_state.pdf_text:
     col1, col2 = st.columns(2)
     
-    # --- COLONNA 1: ANALISI ---
+    # --- SX: INTELLIGENZA ---
     with col1:
-        st.subheader("🧠 Analisi AI")
-        logic = st.selectbox("Analisi:", ["Sintesi", "Validazione", "Action Items", "Critica"])
+        st.subheader("🧠 Analisi")
+        mode = st.selectbox("Tipo:", ["Sintesi", "Validazione", "Action Items", "Critica"])
         
-        if st.button("Analizza Testo", use_container_width=True):
-            prompts = {
-                "Sintesi": "Riassumi il contenuto.",
-                "Validazione": "Verifica i fatti.",
-                "Action Items": "Estrai azioni.",
-                "Critica": "Trova errori."
-            }
-            with st.spinner("Analisi in corso..."):
-                st.session_state.analysis_result = analyze_with_gemini(
-                    st.session_state.pdf_text, prompts[logic]
-                )
-        
+        if st.button("Esegui Analisi", use_container_width=True):
+            prompts = {"Sintesi": "Riassumi.", "Validazione": "Verifica fatti.", "Action Items": "Azioni.", "Critica": "Errori."}
+            with st.spinner("Elaborazione..."):
+                st.session_state.analysis_result = analyze_with_gemini(st.session_state.pdf_text, prompts[mode])
+
         if st.session_state.analysis_result:
-            st.markdown("### Risultato:")
             st.markdown(st.session_state.analysis_result)
-            st.download_button(
-                label="💾 Scarica Report AI",
-                data=st.session_state.analysis_result,
-                file_name="analisi_ai.md",
-                mime="text/markdown"
-            )
+            st.download_button("💾 Scarica Analisi", st.session_state.analysis_result, "analisi.md")
 
-        # Q&A CHAT
         st.divider()
-        st.subheader("💬 Chiedi al PDF")
-        user_question = st.text_input("Fai una domanda specifica:")
-        if user_question and st.button("Chiedi"):
-            with st.spinner("Cerco la risposta..."):
-                answer = analyze_with_gemini(st.session_state.pdf_text, user_question)
-                st.markdown(f"**Risposta:**\n{answer}")
+        st.subheader("💬 Domanda Rapida")
+        q = st.text_input("Chiedi qualcosa:")
+        
+        # Logica "Usa e Getta": il risultato vive solo finché non ne chiedi un altro
+        if q and st.button("Rispondi"):
+            with st.spinner("..."):
+                st.session_state.temp_chat_result = analyze_with_gemini(st.session_state.pdf_text, q)
+        
+        # Mostra risultato e bottone solo se c'è qualcosa nel buffer
+        if st.session_state.temp_chat_result:
+            st.markdown(f"**Risposta:**\n{st.session_state.temp_chat_result}")
+            st.download_button("⬇️ Scarica Risposta", st.session_state.temp_chat_result, "risposta_chat.md")
 
-    # --- COLONNA 2: AUDIO ---
+    # --- DX: AUDIO ---
     with col2:
-        st.subheader("🔊 Audio Neurale")
-        st.info(f"Modalità: {source_choice}")
-        
-        if st.button("Crea Audio MP3", type="primary", use_container_width=True):
-            text_to_read = st.session_state.pdf_text if source_choice == "Testo Originale PDF" else st.session_state.analysis_result
-            
-            if not text_to_read:
-                st.error("⚠️ Testo mancante. Fai prima l'analisi o carica un PDF.")
+        st.subheader("🔊 Audio")
+        if st.button("Genera MP3", type="primary", use_container_width=True):
+            src = st.session_state.pdf_text if source_opt == "Testo PDF" else st.session_state.analysis_result
+            if src:
+                with st.spinner("Creazione audio..."):
+                    st.session_state.audio_file = generate_audio(src, voice_opt)
             else:
-                with st.spinner(f"Generazione voce {voice_choice}..."):
-                    st.session_state.audio_file = generate_audio(text_to_read, voice_choice)
+                st.error("Nessun testo da leggere.")
 
-        st.divider()
-        
         if st.session_state.audio_file:
             st.audio(io.BytesIO(st.session_state.audio_file), format='audio/mpeg')
-            st.download_button(
-                "⬇️ Scarica MP3", 
-                st.session_state.audio_file, 
-                "audio_neurale.mp3", 
-                "audio/mpeg"
-            )
+            st.download_button("⬇️ Scarica MP3", st.session_state.audio_file, "audio.mp3", "audio/mpeg")
 
 else:
-    st.info("Carica un PDF dalla barra laterale per iniziare.")
+    st.info("Carica un PDF.")
