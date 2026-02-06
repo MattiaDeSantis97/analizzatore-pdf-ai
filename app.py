@@ -8,7 +8,12 @@ import edge_tts
 import re
 import io
 
-# --- CONFIGURAZIONE ---
+# --- CONFIGURAZIONE MODELLO ---
+# Se vuoi usare la 2.0 o una futura 2.5, cambia questa stringa:
+# Esempi validi: "gemini-1.5-flash", "gemini-2.0-flash-exp"
+MODEL_ID = "Gemini 2.5 Flash-Lite"
+
+# --- SETUP PAGINA ---
 load_dotenv()
 st.set_page_config(page_title="PDF AI & Audio Neural", layout="wide")
 
@@ -51,9 +56,10 @@ def clean_text_for_audio(text):
     text = re.sub(' +', ' ', text)
     return text.strip()
 
-def analyze_with_gemini(text, prompt_logic, model_name):
+def analyze_with_gemini(text, prompt_logic):
     try:
-        model = genai.GenerativeModel(model_name)
+        # Usa la costante definita in alto
+        model = genai.GenerativeModel(MODEL_ID)
         full_prompt = f"{prompt_logic}\n\n--- TESTO PDF ---\n{text}"
         response = model.generate_content(full_prompt)
         return response.text
@@ -62,7 +68,6 @@ def analyze_with_gemini(text, prompt_logic, model_name):
 
 # --- FUNZIONI AUDIO (SMART CHUNKING) ---
 def chunk_text(text, max_chars=2500):
-    """Divide il testo in blocchi rispettando la punteggiatura."""
     chunks = []
     current_chunk = ""
     sentences = text.replace('.', '.|||').split('|||')
@@ -85,7 +90,6 @@ async def _generate_audio_stream_chunked(text, voice_code, status_placeholder):
     
     for i, chunk in enumerate(chunks):
         if not chunk.strip(): continue
-        # Aggiorna UI
         if status_placeholder:
             status_placeholder.text(f"Generazione audio: blocco {i+1} di {total_chunks}...")
         
@@ -102,7 +106,6 @@ def generate_audio(text, voice_gender):
             st.warning("Nessun testo valido.")
             return None
         
-        # Limite aumentato
         LIMIT = 20000 
         if len(clean_text) > LIMIT:
             st.warning(f"Testo enorme ({len(clean_text)} caratteri). Taglio ai primi {LIMIT}.")
@@ -126,12 +129,8 @@ def generate_audio(text, voice_gender):
             return None
         return audio_bytes
 
-    except Exception as e:
-        st.error(f"Errore generazione audio: {e}")
-        return None
-
 # --- INTERFACCIA UTENTE ---
-st.title("📄 PDF: Analisi AI + Voce Neurale")
+st.title(f"📄 PDF: Analisi AI ({MODEL_ID}) + Voce Neurale")
 
 with st.sidebar:
     st.header("1. Carica File")
@@ -142,7 +141,6 @@ with st.sidebar:
     st.header("2. Impostazioni Audio")
     voice_choice = st.radio("Scegli la voce:", ["Maschile (Diego)", "Femminile (Elsa)"])
     
-    # NOVITÀ: Scelta della sorgente
     st.divider()
     source_choice = st.radio("Cosa vuoi ascoltare?", ["Testo Originale PDF", "Risultato Analisi AI"])
 
@@ -171,10 +169,9 @@ if st.session_state.pdf_text:
             }
             with st.spinner("Analisi in corso..."):
                 st.session_state.analysis_result = analyze_with_gemini(
-                    st.session_state.pdf_text, prompts[logic], "gemini-pro"
+                    st.session_state.pdf_text, prompts[logic]
                 )
         
-        # MOSTRA RISULTATO ANALISI
         if st.session_state.analysis_result:
             st.markdown("### Risultato:")
             st.markdown(st.session_state.analysis_result)
@@ -191,7 +188,7 @@ if st.session_state.pdf_text:
         user_question = st.text_input("Fai una domanda specifica:")
         if user_question and st.button("Chiedi"):
             with st.spinner("Cerco la risposta..."):
-                answer = analyze_with_gemini(st.session_state.pdf_text, user_question, "gemini-pro")
+                answer = analyze_with_gemini(st.session_state.pdf_text, user_question)
                 st.markdown(f"**Risposta:**\n{answer}")
 
     # --- COLONNA 2: AUDIO ---
@@ -200,7 +197,6 @@ if st.session_state.pdf_text:
         st.info(f"Modalità: {source_choice}")
         
         if st.button("Crea Audio MP3", type="primary", use_container_width=True):
-            # Determina cosa leggere
             text_to_read = st.session_state.pdf_text if source_choice == "Testo Originale PDF" else st.session_state.analysis_result
             
             if not text_to_read:
@@ -212,7 +208,6 @@ if st.session_state.pdf_text:
         st.divider()
         
         if st.session_state.audio_file:
-            # FIX PLAYER AUDIO
             st.audio(io.BytesIO(st.session_state.audio_file), format='audio/mpeg')
             st.download_button(
                 "⬇️ Scarica MP3", 
