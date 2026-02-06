@@ -5,8 +5,7 @@ import os
 from dotenv import load_dotenv
 import asyncio
 import edge_tts
-import re
-import tempfile
+import io
 
 # --- CONFIGURAZIONE ---
 load_dotenv()
@@ -67,12 +66,14 @@ def analyze_with_gemini(text, prompt_logic, model_name):
         return f"Errore: {e}"
 
 # Funzione Asincrona per Edge-TTS
-async def _generate_edge_tts(text, voice_code):
+async def _generate_audio_stream(text, voice_code):
     communicate = edge_tts.Communicate(text, voice_code)
-    # Crea un file temporaneo per salvare l'audio
-    with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as tmp_file:
-        await communicate.save(tmp_file.name)
-        return tmp_file.name
+    audio_data = b""
+    # Raccoglie i chunk audio man mano che arrivano
+    async for chunk in communicate.stream():
+        if chunk["type"] == "audio":
+            audio_data += chunk["data"]
+    return audio_data
 
 def generate_audio(text, voice_gender):
     try:
@@ -82,27 +83,27 @@ def generate_audio(text, voice_gender):
             st.warning("Nessun testo valido per l'audio.")
             return None
         
-        # 2. Controllo Lunghezza (Safety Check)
-        # edge-tts può fallire con testi molto lunghi. 
-        # Si consiglia di limitare o dividere in chunk. Qui impostiamo un limite di sicurezza.
+        # 2. Safety Check Lunghezza
         if len(clean_text) > 4000:
             st.warning(f"Testo troppo lungo ({len(clean_text)} caratteri). Verranno letti solo i primi 4000.")
             clean_text = clean_text[:4000]
 
         # 3. Selezione Voce
-        if voice_gender == "Maschile (Diego)":
-            voice_code = "it-IT-DiegoNeural"
-        else:
-            voice_code = "it-IT-ElsaNeural"
+        voice_code = "it-IT-DiegoNeural" if "Diego" in voice_gender else "it-IT-ElsaNeural"
 
-        # 4. Esecuzione Asincrona Corretta per Streamlit
-        # asyncio.run() crea un nuovo loop, esegue la coroutine e chiude il loop.
-        # È sicuro chiamarlo qui perché siamo in un thread sincrono (il callback del bottone).
-        audio_path = asyncio.run(_generate_edge_tts(clean_text, voice_code))
-        
-        # 5. Lettura File
-        with open(audio_path, "rb") as f:
-            audio_bytes = f.read()
+        # 4. Esecuzione Asincrona Isolata
+        # Creiamo un nuovo loop specifico per questa esecuzione per evitare conflitti con Streamlit
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            audio_bytes = loop.run_until_complete(_generate_audio_stream(clean_text, voice_code))
+        finally:
+            loop.close()
+            
+        # Verifica se abbiamo generato byte
+        if not audio_bytes or len(audio_bytes) == 0:
+            st.error("Errore: L'audio generato è vuoto.")
+            return None
             
         return audio_bytes
 
