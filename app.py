@@ -5,6 +5,7 @@ import os
 from dotenv import load_dotenv
 import asyncio
 import edge_tts
+import re  
 import io
 
 # --- CONFIGURAZIONE ---
