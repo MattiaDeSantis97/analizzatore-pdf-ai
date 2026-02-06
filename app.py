@@ -76,25 +76,34 @@ async def _generate_edge_tts(text, voice_code):
 
 def generate_audio(text, voice_gender):
     try:
+        # 1. Pulizia
         clean_text = clean_text_for_audio(text)
         if not clean_text.strip():
+            st.warning("Nessun testo valido per l'audio.")
             return None
         
-        # Selezione Voce
-        # Diego ed Elsa sono voci "Neural" molto naturali
+        # 2. Controllo Lunghezza (Safety Check)
+        # edge-tts può fallire con testi molto lunghi. 
+        # Si consiglia di limitare o dividere in chunk. Qui impostiamo un limite di sicurezza.
+        if len(clean_text) > 4000:
+            st.warning(f"Testo troppo lungo ({len(clean_text)} caratteri). Verranno letti solo i primi 4000.")
+            clean_text = clean_text[:4000]
+
+        # 3. Selezione Voce
         if voice_gender == "Maschile (Diego)":
             voice_code = "it-IT-DiegoNeural"
         else:
             voice_code = "it-IT-ElsaNeural"
 
-        # Esegue la funzione asincrona in modo sincrono per Streamlit
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        audio_path = loop.run_until_complete(_generate_edge_tts(clean_text, voice_code))
+        # 4. Esecuzione Asincrona Corretta per Streamlit
+        # asyncio.run() crea un nuovo loop, esegue la coroutine e chiude il loop.
+        # È sicuro chiamarlo qui perché siamo in un thread sincrono (il callback del bottone).
+        audio_path = asyncio.run(_generate_edge_tts(clean_text, voice_code))
         
-        # Legge il file in bytes per Streamlit
+        # 5. Lettura File
         with open(audio_path, "rb") as f:
             audio_bytes = f.read()
+            
         return audio_bytes
 
     except Exception as e:
